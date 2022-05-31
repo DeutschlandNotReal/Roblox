@@ -1,0 +1,158 @@
+local FuncRate = {}; local FuncMeta = {}; FuncMeta.__index = FuncMeta 
+
+
+export type FRObj = -- FuncRate Object
+	{
+		Schedule: {
+			{
+				['Func']: ()->(),
+				['Args']: {}
+				
+			}?
+		},
+		LAF: ()->()?, -- Linked Active Function
+		LC: thread?, -- Linked Coroutine
+		Events: 
+		{
+			['OnUpdate']: BindableEvent,
+			['OnYield']: BindableEvent,
+			['OnError']: BindableEvent,
+			['OnResume']: BindableEvent,
+			['OnAddedSchedule']: BindableEvent
+		
+		}?,
+		Cache: 
+		{
+			['SchedCache']:{},
+			['EventCallsCache']:{string}
+		}?
+		
+	}
+
+type metatable = {
+	['__index']: ()->() | {any},
+	['__newindex'] : ()->() |{any},
+	['__call'] : ()->(),
+	['__tostring']: ()->(),
+	['__metatable']: string,
+	['__mode']: string
+}
+
+
+local function CacheCons(meta) -- constructs a cache-holder for the object
+	meta.Cache={}; meta.Cache.SchedCache={}; meta.Cache.EventCallsCache={}
+end
+
+function FuncMeta:OnUpdate(): RBXScriptSignal
+	return self.Events.OnUpdate.Event
+end
+function FuncMeta:OnYield(): RBXScriptSignal
+	return self.Events.OnYield.Event
+end
+function FuncMeta:OnError(): RBXScriptSignal
+	return self.Events.OnError.Event
+end
+function FuncMeta:OnResume():RBXScriptSignal
+	return self.Events.OnResume.Event
+end
+
+function FuncRate.create()
+	local data: FRObj = 
+		{
+			Schedule={},
+			Events = 
+			{
+				['OnUpdate'] = Instance.new('BindableEvent'),
+				['OnYield'] = Instance.new('BindableEvent'),
+				['OnError'] = Instance.new('BindableEvent'),
+				['OnResume'] = Instance.new('BindableEvent'),
+				['OnAddedSchedule'] = Instance.new('BindableEvent')
+			}
+			
+			
+		}
+	
+	setmetatable(data,FuncMeta)
+	return data
+end
+
+
+function FuncMeta:insert(Func:()->(),Args:{}?)
+	table.insert(self.Schedule,{['Func']=Func,['Args']=Args or {}})
+	self.Events.OnAddedSchedule:Fire()
+end
+function FuncMeta:binsert(Bulk:{{Func:()->(),Args:{}}})
+	self.Schedule = {table.unpack(self.Schedule),table.unpack(Bulk)}
+	self.Events.OnAddedSchedule:Fire()
+end
+
+function FuncMeta:start(Hertz:number,KeepCache:boolean?)
+	if KeepCache and not self.Cache then
+		CacheCons(self)
+	end
+	if not (self.LAF and self.LC) then
+		self.LAF = function()
+			local DT = {}
+			while task.wait(1/Hertz) do
+				local _, err = pcall(function()
+					if #self.Schedule > 0 then 
+						self.Events.OnUpdate:Fire()
+					end
+					self.Schedule[1]['Func'](table.unpack(self.Schedule[1]['Args']))
+					if KeepCache then
+						table.insert(self.Cache.SchedCache,self.Schedule[1]) -- saves the call on History
+					end
+					self.Schedule[1] = nil -- removes executed call
+					
+					
+				end)
+				self.Events.OnYield.Event:Connect(function()
+					self.Events.OnResume.Event:Wait()
+				end)
+				if err then self.Events.OnError:Fire(err) end
+				
+				DT[1] = os.clock()
+				self.Events.OnAddedSchedule.Event:Wait()
+				DT[2] = os.clock();if DT[2]-DT[1] < 1/Hertz then task.wait(DT[2]-DT[1]) end
+				
+				
+				
+				
+			end
+		end
+
+			
+		self.LC = coroutine.create(self.LAF)
+		
+	end
+	setmetatable(self,FuncMeta)
+	coroutine.resume(self.LC)
+end
+
+function FuncMeta:yield(Duration:number?)
+	self.Events.OnYield:Fire()
+	if Duration then
+		coroutine.wrap(function()
+			self.Events.OnYield:Fire()
+			task.wait(Duration)
+		end)
+	end
+end
+
+function FuncMeta:resume()
+	self.Events.OnResume:Fire()
+end
+
+
+function FuncMeta:ClearSched()
+	self.Schedule = {}
+end
+
+function FuncMeta:ClearSHistory()
+	if self.Cache.SchedCache then
+		self.Cache.SchedCache = {}
+	end
+end
+
+
+return FuncRate
